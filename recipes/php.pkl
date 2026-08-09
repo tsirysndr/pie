@@ -181,15 +181,23 @@ verify = new {
       [ "$("$php" -r 'echo PHP_VERSION;')" = "{{version}}" ]
 
       # Every extension is compiled in, so this list is the real feature set.
+      # Asked through extension_loaded() rather than by grepping `php -m`:
+      # the registered name is not always the configure switch that produced it
+      # (--enable-opcache registers "Zend OPcache"), and extension_loaded
+      # normalises case for us.
       "$php" -m
+      missing=""
       for ext in openssl curl mbstring intl gd zip sqlite3 pdo_mysql pdo_pgsql \
                  soap sockets bcmath exif ffi sodium xsl tidy gmp readline \
-                 opcache snmp enchant ldap; do
-        "$php" -m | grep -qix "$ext" || {
-          echo "extension '$ext' is missing from the build" >&2
-          exit 1
-        }
+                 snmp enchant ldap "Zend OPcache"; do
+        EXT="$ext" "$php" -r 'exit(extension_loaded(getenv("EXT")) ? 0 : 1);' \
+          || missing="$missing $ext"
       done
+      # Report every absence at once; finding them one build at a time is slow.
+      if [ -n "$missing" ]; then
+        echo "extensions missing from the build:$missing" >&2
+        exit 1
+      fi
       echo "all expected extensions are present"
 
       "$php" -r 'echo json_encode(["pie" => true, "sha" => hash("sha256", "pie")]), PHP_EOL;'
