@@ -1,0 +1,195 @@
+name: release
+
+# Builds the pie CLI itself and attaches the binaries to a GitHub release.
+#
+# Triggered by pushing a "v<version>" tag, e.g. v0.1.0. This does not collide
+# with the artifact tags in build.yml, which are always "<recipe>-v<version>"
+# and so never start with a bare "v".
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Recipes are Pkl and the tests load them, so pkl is needed here too. A
+      # tag push does not trigger ci.yml, so this job is the only gate before a
+      # release goes out.
+      - name: Install pkl
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
+          sudo chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      # A binary whose `pie --version` disagrees with the tag it was released
+      # under is worse than no release at all, so fail before building.
+      - name: Tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tagged" ]; then
+            echo "::error::tag $GITHUB_REF_NAME implies version '$tagged' but Cargo.toml says '$crate'"
+            exit 1
+          fi
+          echo "releasing pie $crate"
+
+      - name: Tests
+        run: cargo test --locked
+
+  build:
+    name: ${{ matrix.target }}
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          # Built natively on an Intel runner rather than cross-compiled, so the
+          # ring assembly in the TLS stack is exercised on its own host.
+          - target: x86_64-apple-darwin
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="pie-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+
+          # The release profile already strips; copy rather than install so the
+          # step behaves the same on macOS, where install(1) differs.
+          cp "target/${{ matrix.target }}/release/pie" "dist/$name/pie"
+          cp README.md LICENSE "dist/$name/"
+          chmod +x "dist/$name/pie"
+
+          tar -C dist -czf "dist/${name}.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          ls -la dist
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test the packaged binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.package.outputs.name }}"
+          mkdir -p check && tar -C check -xzf "dist/${name}.tar.gz"
+
+          # The linux-arm64 and both macOS binaries run natively on their
+          # runners; nothing here is cross-compiled, so all four can be executed.
+          "check/$name/pie" --version
+          "check/$name/pie" --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # A pie binary on its own cannot do anything: it needs the recipes and the
+      # schema they amend, so they ship alongside it.
+      - name: Bundle the recipes
+        run: |
+          set -euo pipefail
+          # Exclude the generated YAML: the .pkl sources are what ship, and a
+          # stray local render must never end up in a release.
+          tar --exclude='*.yaml' -czf "dist/pie-recipes-${GITHUB_REF_NAME}.tar.gz" recipes pkl
+          ( cd dist && sha256sum "pie-recipes-${GITHUB_REF_NAME}.tar.gz" \
+              > "pie-recipes-${GITHUB_REF_NAME}.tar.gz.sha256" )
+          ls -la dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          notes=$(cat <<EOF
+          \`pie\` ${TAG} — builds official language runtimes and databases from source as
+          position independent executables, from typed Pkl recipes.
+
+          | Platform | Asset |
+          |---|---|
+          | Linux x86-64 | \`pie-x86_64-unknown-linux-gnu.tar.gz\` |
+          | Linux arm64 | \`pie-aarch64-unknown-linux-gnu.tar.gz\` |
+          | macOS Apple silicon | \`pie-aarch64-apple-darwin.tar.gz\` |
+          | macOS Intel | \`pie-x86_64-apple-darwin.tar.gz\` |
+          | Recipes and schema | \`pie-recipes-${TAG}.tar.gz\` |
+
+          \`\`\`sh
+          tar -xzf pie-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf pie-recipes-${TAG}.tar.gz
+          ./pie-x86_64-unknown-linux-gnu/pie list
+          \`\`\`
+
+          Recipes are Pkl, so \`pie\` needs the [\`pkl\` CLI](https://pkl-lang.org/main/current/pkl-cli/)
+          on PATH to read them. Checksums are in the accompanying \`.sha256\` files.
+          EOF
+          )
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "pie $TAG" \
+              --notes "$notes"
+          fi
+
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
