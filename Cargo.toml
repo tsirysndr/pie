@@ -2,7 +2,7 @@
 name = "pie"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.79"  # std::path::absolute
 description = "Build official language runtimes from source with PIE enabled, from YAML recipes"
 license = "MIT"
 

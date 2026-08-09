@@ -243,6 +243,67 @@ fn self_contained_checks_declare_an_allowlist() {
     }
 }
 
+/// Directories that live directly under the work dir. A bare `src/...` in a
+/// step that declares its own `cwd` is ambiguous: it resolves against that cwd,
+/// not the work dir, which is exactly how a step running in `src/` ends up
+/// unable to reach a tarball downloaded to `downloads/`.
+const WORK_DIR_CHILDREN: [&str; 8] = [
+    "src/",
+    "out/",
+    "stage/",
+    "dist/",
+    "build/",
+    "downloads/",
+    "deps-prefix/",
+    "deps-src/",
+];
+
+/// A step with a `cwd` must address anything outside that directory through a
+/// template variable, which the builder resolves to an absolute path. Writing
+/// `./src/x` (explicitly relative to the cwd) is fine; writing `src/x` and
+/// meaning the work dir is not.
+#[test]
+fn steps_with_a_cwd_do_not_use_work_relative_paths() {
+    for (name, _, recipe) in all_recipes() {
+        let groups: [(&str, &Vec<pie::recipe::Step>); 4] = [
+            ("dependencies.extra", &recipe.dependencies.extra),
+            ("build", &recipe.build),
+            ("package.steps", &recipe.package.steps),
+            ("verify.smoke", &recipe.verify.smoke),
+        ];
+
+        for (label, steps) in groups {
+            for step in steps {
+                let Some(cwd) = &step.cwd else {
+                    continue; // no cwd: the step runs in the work dir already
+                };
+
+                for token in step.run.split_whitespace() {
+                    // Drop `VAR=` prefixes and surrounding quotes.
+                    let bare = token
+                        .rsplit('=')
+                        .next()
+                        .unwrap_or(token)
+                        .trim_start_matches(['"', '\'', '(']);
+
+                    if let Some(child) = WORK_DIR_CHILDREN
+                        .iter()
+                        .find(|child| bare.starts_with(**child))
+                    {
+                        panic!(
+                            "{name}: {label} step '{}' runs in cwd '{cwd}' but references \
+                             '{bare}'. A bare '{child}' resolves against the cwd, not the work \
+                             directory — write './{child}...' if that is what you mean, or use a \
+                             template variable such as {{{{workdir}}}} for the work directory.",
+                            step.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Recipes reach for helper scripts by `{{repo_root}}`; if one is renamed the
 /// build would fail only once it got that far.
 #[test]

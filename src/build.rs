@@ -80,10 +80,14 @@ pub fn run(opts: &Options) -> Result<()> {
         }
     };
 
-    let work = opts
-        .work_dir
-        .join(format!("{}-{}-{}", recipe.name, resolved.bare, opts.arch));
-    let dist = opts.output.clone();
+    // Every derived path is made absolute up front. Steps run with their own
+    // `cwd`, so a relative path baked into a generated script would resolve
+    // against the step's directory rather than the process's — which is how a
+    // tarball downloaded to `work/<x>/downloads` becomes unreachable from a
+    // step running in `work/<x>/src`.
+    let work =
+        absolute(&opts.work_dir)?.join(format!("{}-{}-{}", recipe.name, resolved.bare, opts.arch));
+    let dist = absolute(&opts.output)?;
     let src = work.join(recipe.source.as_ref().map_or("src", |s| s.dir.as_str()));
     let deps_prefix = work.join("deps-prefix");
 
@@ -747,6 +751,12 @@ fn extract_for_verification(
     Ok(target.join(inner_dir))
 }
 
+/// Resolves a path against the current directory without requiring it to exist.
+fn absolute(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path)
+        .with_context(|| format!("resolving {} to an absolute path", path.display()))
+}
+
 fn gnu_arch(arch: &str) -> &'static str {
     match arch {
         "arm64" | "aarch64" => "aarch64",
@@ -868,6 +878,20 @@ mod tests {
         assert_eq!(vars.get("arch_gnu"), Some("x86_64"));
         // Absent upstream tag must be empty, never the literal "None".
         assert_eq!(vars.get("upstream_tag"), Some(""));
+    }
+
+    /// Regression: build paths must be absolute. A relative one resolves
+    /// against whatever `cwd` a step declares, so a step running in `src/`
+    /// could not reach the tarball downloaded into the work directory.
+    #[test]
+    fn build_paths_are_absolute() {
+        let resolved = absolute(Path::new("work")).expect("resolves");
+        assert!(resolved.is_absolute(), "{resolved:?} should be absolute");
+        assert!(resolved.ends_with("work"));
+
+        // An absolute path is passed through unchanged.
+        let already = absolute(Path::new("/tmp/pie-dist")).expect("resolves");
+        assert_eq!(already, Path::new("/tmp/pie-dist"));
     }
 
     #[test]
