@@ -1,11 +1,13 @@
 [package]
-name = "pie"
+name = "pie-cli"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.79"  # std::path::absolute
-description = "Build official language runtimes from source with PIE enabled, from YAML recipes"
+description = "Build official language runtimes and databases from source as position independent executables, from typed Pkl recipes"
 license = "MIT"
 
+# The package is `pie-cli`, but the library and the binary it ships are both
+# plain `pie`: `use pie::…` in the tests, and `pie` on your PATH.
 [lib]
 name = "pie"
 path = "src/lib.rs"
