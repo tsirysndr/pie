@@ -1,0 +1,56 @@
+name: Build pie
+description: >-
+  Builds the pie CLI, restoring a previously built binary when nothing that
+  affects it has changed. Swatinem/rust-cache keeps dependency artifacts warm
+  but deliberately discards the workspace's own outputs, so without this the
+  crate is relinked on every job of every run.
+
+inputs:
+  cache-key-suffix:
+    description: Extra text to fold into the cache key
+    required: false
+    default: ''
+
+outputs:
+  cached:
+    description: 'true when the binary came from the cache rather than a build'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # The binary depends on the sources, the manifest, the locked dependency
+    # versions and the compiler — nothing else. Tests and recipes are excluded
+    # on purpose: changing them must not force a relink.
+    - name: Fingerprint the toolchain
+      id: rust
+      shell: bash
+      run: echo "id=$(rustc -Vv | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pie
+      id: restore
+      uses: actions/cache@v4
+      with:
+        path: target/release/pie
+        key: >-
+          pie-bin-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust.outputs.id }}-${{
+          hashFiles('Cargo.lock', 'Cargo.toml', 'src/**') }}${{ inputs.cache-key-suffix }}
+
+    - name: Build pie
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo build --release --locked
+
+    - name: Report
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ steps.restore.outputs.cache-hit }}" = "true" ]; then
+          echo "reused the cached pie binary"
+          # A restored file is useless if it will not execute; fail here rather
+          # than at the first build step that tries to use it.
+          chmod +x target/release/pie
+        else
+          echo "built pie from source"
+        fi
+        ./target/release/pie --version

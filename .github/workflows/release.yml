@@ -2,6 +2,10 @@ name: release
 
 # Builds the pie CLI itself and attaches the binaries to a GitHub release.
 #
+# Linux only, on purpose: every recipe builds ELF executables with apt-installed
+# dependencies, so a macOS binary of pie could inspect and render recipes but
+# never actually build one.
+#
 # Triggered by pushing a "v<version>" tag, e.g. v0.1.0. This does not collide
 # with the artifact tags in build.yml, which are always "<recipe>-v<version>"
 # and so never start with a bare "v".
@@ -33,12 +37,7 @@ jobs:
       # tag push does not trigger ci.yml, so this job is the only gate before a
       # release goes out.
       - name: Install pkl
-        run: |
-          set -euo pipefail
-          sudo curl -fsSL -o /usr/local/bin/pkl \
-            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
-          sudo chmod +x /usr/local/bin/pkl
-          pkl --version
+        uses: ./.github/actions/install-pkl
 
       # A binary whose `pie --version` disagrees with the tag it was released
       # under is worse than no release at all, so fail before building.
@@ -69,12 +68,6 @@ jobs:
             runner: ubuntu-24.04
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-          - target: aarch64-apple-darwin
-            runner: macos-15
-          # Built natively on an Intel runner rather than cross-compiled, so the
-          # ring assembly in the TLS stack is exercised on its own host.
-          - target: x86_64-apple-darwin
-            runner: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -90,14 +83,12 @@ jobs:
 
       - name: Package
         id: package
-        shell: bash
         run: |
           set -euo pipefail
           name="pie-${{ matrix.target }}"
           mkdir -p "dist/$name"
 
-          # The release profile already strips; copy rather than install so the
-          # step behaves the same on macOS, where install(1) differs.
+          # The release profile already strips the binary.
           cp "target/${{ matrix.target }}/release/pie" "dist/$name/pie"
           cp README.md LICENSE "dist/$name/"
           chmod +x "dist/$name/pie"
@@ -105,19 +96,18 @@ jobs:
           tar -C dist -czf "dist/${name}.tar.gz" "$name"
           rm -rf "dist/$name"
 
-          ( cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256" )
+          ( cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256" )
           ls -la dist
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test the packaged binary
-        shell: bash
         run: |
           set -euo pipefail
           name="${{ steps.package.outputs.name }}"
           mkdir -p check && tar -C check -xzf "dist/${name}.tar.gz"
 
-          # The linux-arm64 and both macOS binaries run natively on their
-          # runners; nothing here is cross-compiled, so all four can be executed.
+          # Both targets are built on a runner of their own architecture, so
+          # nothing is cross-compiled and the artifact can actually be run.
           "check/$name/pie" --version
           "check/$name/pie" --help > /dev/null
 
@@ -170,8 +160,6 @@ jobs:
           |---|---|
           | Linux x86-64 | \`pie-x86_64-unknown-linux-gnu.tar.gz\` |
           | Linux arm64 | \`pie-aarch64-unknown-linux-gnu.tar.gz\` |
-          | macOS Apple silicon | \`pie-aarch64-apple-darwin.tar.gz\` |
-          | macOS Intel | \`pie-x86_64-apple-darwin.tar.gz\` |
           | Recipes and schema | \`pie-recipes-${TAG}.tar.gz\` |
 
           \`\`\`sh

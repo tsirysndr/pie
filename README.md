@@ -46,9 +46,9 @@ typo or an unofficial version fails in seconds rather than an hour into a compil
 
 ## Install
 
-Prebuilt binaries for Linux (x86-64, arm64) and macOS (Apple silicon, Intel) are attached
-to each [release](../../releases), along with a `pie-recipes-<tag>.tar.gz` bundle — the
-binary needs the recipes and the schema they amend:
+Prebuilt binaries for Linux (x86-64 and arm64) are attached to each
+[release](../../releases), along with a `pie-recipes-<tag>.tar.gz` bundle — the binary
+needs the recipes and the schema they amend:
 
 ```sh
 tar -xzf pie-x86_64-unknown-linux-gnu.tar.gz

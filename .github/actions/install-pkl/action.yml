@@ -1,0 +1,41 @@
+name: Install pkl
+description: >-
+  Installs the pkl CLI matching the runner's architecture. Recipes are Pkl, so
+  pie shells out to this to read them.
+
+inputs:
+  version:
+    description: pkl release to install
+    required: false
+    default: '0.32.1'
+
+runs:
+  using: composite
+  steps:
+    - name: Install pkl ${{ inputs.version }}
+      shell: bash
+      env:
+        PKL_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        # This repository builds on both x64 and arm64 runners. Hardcoding the
+        # amd64 asset silently installs a binary that cannot run on arm.
+        case "$(uname -m)" in
+          x86_64)  asset=pkl-linux-amd64 ;;
+          aarch64) asset=pkl-linux-aarch64 ;;
+          *)
+            echo "::error::pkl publishes no linux build for $(uname -m)"
+            exit 1
+            ;;
+        esac
+
+        url="https://github.com/apple/pkl/releases/download/${PKL_VERSION}/${asset}"
+        echo "installing ${asset} from ${url}"
+
+        sudo curl -fsSL --retry 3 -o /usr/local/bin/pkl "$url"
+        sudo chmod +x /usr/local/bin/pkl
+
+        # Fails loudly if the wrong architecture was fetched: an amd64 binary on
+        # an arm runner dies here with "cannot execute binary file".
+        pkl --version

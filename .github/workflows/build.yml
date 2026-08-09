@@ -68,15 +68,10 @@ jobs:
 
       # Recipes are Pkl; pie evaluates them through the pkl CLI.
       - name: Install pkl
-        run: |
-          set -euo pipefail
-          sudo curl -fsSL -o /usr/local/bin/pkl \
-            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
-          sudo chmod +x /usr/local/bin/pkl
-          pkl --version
+        uses: ./.github/actions/install-pkl
 
       - name: Build pie
-        run: cargo build --release --locked
+        uses: ./.github/actions/build-pie
 
       - name: Resolve the recipe and version
         id: plan
@@ -150,15 +145,10 @@ jobs:
 
       # Recipes are Pkl; pie evaluates them through the pkl CLI.
       - name: Install pkl
-        run: |
-          set -euo pipefail
-          sudo curl -fsSL -o /usr/local/bin/pkl \
-            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
-          sudo chmod +x /usr/local/bin/pkl
-          pkl --version
+        uses: ./.github/actions/install-pkl
 
       - name: Build pie
-        run: cargo build --release --locked
+        uses: ./.github/actions/build-pie
 
       - name: Free disk space
         run: |

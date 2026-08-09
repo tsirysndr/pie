@@ -32,12 +32,7 @@ jobs:
       # Recipes are Pkl, and pie shells out to the pkl CLI to evaluate them, so
       # the recipe lint tests need it present.
       - name: Install pkl
-        run: |
-          set -euo pipefail
-          sudo curl -fsSL -o /usr/local/bin/pkl \
-            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
-          sudo chmod +x /usr/local/bin/pkl
-          pkl --version
+        uses: ./.github/actions/install-pkl
 
       - name: Formatting
         run: cargo fmt --all --check
@@ -74,15 +69,10 @@ jobs:
           key: e2e
 
       - name: Install pkl
-        run: |
-          set -euo pipefail
-          sudo curl -fsSL -o /usr/local/bin/pkl \
-            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
-          sudo chmod +x /usr/local/bin/pkl
-          pkl --version
+        uses: ./.github/actions/install-pkl
 
       - name: Build pie
-        run: cargo build --release --locked
+        uses: ./.github/actions/build-pie
 
       # The real thing: resolve, install dependencies, download and verify the
       # source, compile, verify PIE, package, then unpack to a fresh prefix and
