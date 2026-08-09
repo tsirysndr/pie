@@ -1,5 +1,7 @@
 # pie
 
+[![ci](https://github.com/tsirysndr/pie/actions/workflows/ci.yml/badge.svg)](https://github.com/tsirysndr/pie/actions/workflows/ci.yml)
+
 A CLI that builds **official releases of language runtimes and databases from source, as
 position independent executables**, from typed Pkl recipes — with live build logs, PIE
 verification baked in, and GitHub Actions wiring to publish the artifacts.
