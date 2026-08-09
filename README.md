@@ -121,7 +121,8 @@ build links matters** — a project that also produces shared objects cannot sim
 | Project | Where `-pie` goes | Why |
 |---|---|---|
 | Node.js | `LDFLAGS` | A default Node build links executables only |
-| Redis, Bun | `LDFLAGS` | Dependencies are static archives |
+| Bun | `LDFLAGS` | Dependencies are static archives |
+| Redis | `REDIS_LDFLAGS` | `LDFLAGS` is reused when linking Redis's test modules |
 | CPython | `LINKFORSHARED` | `LDFLAGS` is reused for stdlib extension `.so` files |
 | PHP | `EXTRA_LDFLAGS_PROGRAM` | PHP's own program-only link variable |
 | PostgreSQL | `LDFLAGS_EX` | Postgres separates `_EX` (executables) from `_SL` (shared libs) |

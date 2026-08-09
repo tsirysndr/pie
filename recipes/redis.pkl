@@ -18,8 +18,15 @@ version {
 }
 
 env = new {
+  // Redis builds shared objects as well as executables: its test modules link
+  // with `$(SHOBJ_LDFLAGS) $(LDFLAGS)`, so -pie in LDFLAGS produces
+  // `gcc -shared -pie` and the link dies on an undefined reference to `main`.
+  //
+  // src/Makefile composes FINAL_LDFLAGS = $(LDFLAGS) $(OPT) $(REDIS_LDFLAGS)
+  // and uses it only for the executables, so REDIS_LDFLAGS is where -pie goes.
   [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
-  [#"LDFLAGS"#] = #"-pie -Wl,-z,relro -Wl,-z,now"#
+  [#"LDFLAGS"#] = #"-Wl,-z,relro -Wl,-z,now"#
+  [#"REDIS_LDFLAGS"#] = #"-pie"#
 }
 
 dependencies = new {
