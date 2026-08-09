@@ -1,0 +1,133 @@
+/// DragonflyDB, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"dragonfly"#
+display_name = #"DragonflyDB"#
+description = #"Official DragonflyDB releases, built from source as a PIE."#
+homepage = #"https://www.dragonflydb.io"#
+
+version {
+  resolver = #"github"#
+  repo = #"dragonflydb/dragonfly"#
+  tag_prefix = #"v"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-pie -Wl,-z,relro -Wl,-z,now"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"cmake"#
+    #"ninja-build"#
+    #"pkg-config"#
+    #"autoconf-archive"#
+    #"automake"#
+    #"libtool"#
+    #"bison"#
+    #"git"#
+    #"patch"#
+    #"zip"#
+    #"unzip"#
+    #"curl"#
+    #"ca-certificates"#
+    #"file"#
+    #"binutils"#
+    #"libssl-dev"#
+    #"libunwind-dev"#
+    #"libboost-context-dev"#
+    #"libboost-fiber-dev"#
+    #"libxml2-dev"#
+    #"zlib1g-dev"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Clone the tagged source with submodules"#
+    run = #"""
+    rm -rf src
+    git clone --depth 1 --recurse-submodules --shallow-submodules \
+      --branch "{{upstream_tag}}" \
+      https://github.com/dragonflydb/dragonfly.git src
+    git -C src rev-parse HEAD
+    """#
+  }
+  new {
+    name = #"Configure"#
+    cwd = #"src"#
+    run = #"""
+    # blaze.sh is Dragonfly's thin wrapper over cmake; it forwards any extra
+    # arguments straight through, which is where the PIE flags go in.
+    ./helio/blaze.sh -release \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro -Wl,-z,now"
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src/build-opt"#
+    run = #"ninja -j{{nproc}} dragonfly"#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    cwd = #"src/build-opt"#
+    run = #"./dragonfly --version"#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/build-opt/dragonfly"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/dragonfly"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      bin="{{extracted}}/bin/dragonfly"
+      "$bin" --version
+
+      "$bin" --port 6389 --dbfilename '' --logtostderr &
+      pid=$!
+      trap 'kill $pid 2>/dev/null || true' EXIT
+      for _ in $(seq 1 30); do
+        (exec 3<>/dev/tcp/127.0.0.1/6389 && printf 'PING\r\n' >&3 && head -c 7 <&3 | grep -q PONG) \
+          2>/dev/null && break
+        sleep 1
+      done
+      echo "server answered PING"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"dragonfly-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"""
+      mkdir -p "{{stage}}/bin"
+      cp src/build-opt/dragonfly "{{stage}}/bin/dragonfly"
+      chmod +x "{{stage}}/bin/dragonfly"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"Built from a git checkout rather than a release tarball because helio and friends are submodules."#
+  #"Dragonfly needs a modern C++20 toolchain; ubuntu-24.04's GCC 13 is the minimum tested here."#
+}

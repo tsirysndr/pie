@@ -1,0 +1,56 @@
+name: ci
+
+# Lints the tool and every recipe. This is the cheap gate: a Pkl type error, a
+# typo'd template variable, or a recipe that forgets to verify its output is
+# caught here in seconds rather than an hour into a build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # Recipes are Pkl, and pie shells out to the pkl CLI to evaluate them, so
+      # the recipe lint tests need it present.
+      - name: Install pkl
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
+          sudo chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # Includes tests/recipes.rs, which loads every recipe through pkl and
+      # checks names, template variables, artifact names and helper scripts.
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Every recipe evaluates and renders
+        run: |
+          cargo run --locked --quiet -- list
+          cargo run --locked --quiet -- generate

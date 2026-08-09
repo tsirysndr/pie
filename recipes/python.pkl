@@ -1,0 +1,194 @@
+/// CPython, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"python"#
+display_name = #"CPython"#
+description = #"Official CPython releases, built as a PIE with every third-party library statically linked."#
+homepage = #"https://www.python.org"#
+
+version {
+  resolver = #"directory"#
+  listing = #"https://www.python.org/ftp/python/"#
+  probe = #"https://www.python.org/ftp/python/{{candidate}}/Python-{{candidate}}.tgz"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+vars = new {
+  [#"interpreter"#] = #"bin/python{{version_xy}}"#
+}
+
+env = new {
+  [#"MODULE_BUILDTYPE"#] = #"static"#
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CPPFLAGS"#] = #"-I{{deps_prefix}}/include -I{{deps_prefix}}/include/ncursesw"#
+  [#"LDFLAGS"#] = #"-L{{deps_prefix}}/lib -Wl,-z,relro -Wl,-z,now"#
+  [#"PKG_CONFIG_PATH"#] = #"{{deps_prefix}}/lib/pkgconfig"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"pkg-config"#
+    #"make"#
+    #"perl"#
+    #"xz-utils"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+    #"patch"#
+  }
+  dnf = new {
+    #"gcc"#
+    #"gcc-c++"#
+    #"make"#
+    #"perl-core"#
+    #"pkgconfig"#
+    #"xz"#
+    #"tar"#
+    #"file"#
+    #"binutils"#
+    #"patch"#
+    #"diffutils"#
+    #"findutils"#
+  }
+}
+
+source {
+  url = #"https://www.python.org/ftp/python/{{version}}/Python-{{version}}.tgz"#
+  checksum {
+    kind = #"record"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Build static dependencies"#
+    run = #"""
+    DEPS_PREFIX="{{deps_prefix}}" \
+    DEPS_SRC="{{workdir}}/deps-src" \
+    DEPS_DIGESTS="{{workdir}}/deps-digests.txt" \
+      bash "{{repo_root}}/scripts/python/build-deps.sh"
+    """#
+  }
+  new {
+    name = #"Configure"#
+    cwd = #"src"#
+    run = #"""
+    # --prefix=/ plus DESTDIR keeps the install tree relocatable: CPython
+    # locates its stdlib by walking up from the executable looking for
+    # lib/pythonX.Y/os.py, so the tarball works wherever it is unpacked.
+    args=(
+      --prefix=/
+      --with-openssl={{deps_prefix}}
+      --with-ensurepip=install
+      --enable-loadable-sqlite-extensions
+    )
+    case " $PIE_WITH " in *" pgo "*) args+=(--enable-optimizations) ;; esac
+    case " $PIE_WITH " in *" lto "*) args+=(--with-lto) ;; esac
+    ./configure "${args[@]}"
+
+    # -pie rides in on LINKFORSHARED, the one variable CPython uses purely for
+    # executable links. Append to the configured value rather than replacing
+    # it, or the interpreter loses -export-dynamic and C extensions break.
+    grep -q '^LINKFORSHARED=' Makefile || {
+      echo "LINKFORSHARED missing from the generated Makefile" >&2
+      exit 1
+    }
+    sed -n 's/^LINKFORSHARED=[[:space:]]*//p' Makefile | head -n1 > .linkforshared
+    echo "LINKFORSHARED = $(cat .linkforshared) -pie"
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"make -j{{nproc}} LINKFORSHARED="$(cat .linkforshared) -pie""#
+  }
+  new {
+    name = #"Check no stdlib module was left dynamic"#
+    cwd = #"src"#
+    run = #"""
+    # With MODULE_BUILDTYPE=static only CPython's own test modules may remain
+    # shared; a real stdlib module here means a silent runtime dependency.
+    stray="$(find build -name '*.so' 2>/dev/null \
+      | grep -vE '_test|xxlimited' || true)"
+    if [ -n "$stray" ]; then
+      echo "these stdlib modules were built as shared objects:" >&2
+      echo "$stray" >&2
+      exit 1
+    fi
+    echo "all stdlib extension modules are builtin"
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/python"#
+  }
+  packaged = new {
+    #"stage/{{package}}/{{interpreter}}"#
+  }
+  self_contained = new {
+    #"stage/{{package}}/{{interpreter}}"#
+  }
+  dynamic_allowlist = new {
+    #"libc.so"#
+    #"libm.so"#
+    #"libdl.so"#
+    #"libpthread.so"#
+    #"librt.so"#
+    #"libutil.so"#
+    #"libcrypt.so"#
+    #"libnsl.so"#
+    #"ld-linux"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      py="{{extracted}}/bin/python3"
+      "$py" -VV
+      [ "$("$py" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')" = "{{version}}" ]
+
+      "$py" - <<'PY'
+      import bz2, ctypes, curses, decimal, hashlib, lzma, readline, sqlite3, ssl, uuid, zlib
+      print("openssl:", ssl.OPENSSL_VERSION)
+      print("sqlite3:", sqlite3.sqlite_version)
+      print("decimal:", type(decimal.Decimal).__module__)
+      print("sha256 :", hashlib.sha256(b"pie").hexdigest())
+      PY
+
+      "$py" -m pip --version
+      "$py" -m venv "{{workdir}}/venv"
+      "{{workdir}}/venv/bin/python" -c 'import sys; print("venv ok", sys.executable)'
+      """#
+    }
+  }
+}
+
+package {
+  name = #"python-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"""
+      make -C src install \
+        DESTDIR="{{stage}}" \
+        LINKFORSHARED="$(cat src/.linkforshared) -pie"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"Relocatable — unpack anywhere and run bin/python3. pip and venv are included."#
+  #"Third-party libraries are static; only glibc is dynamic, so the glibc of the build host is the floor."#
+  #"No tkinter and no gdbm: tcl/tk and gdbm are not built. The terminfo database is not bundled either, so curses uses the host's."#
+}

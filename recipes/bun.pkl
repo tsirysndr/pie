@@ -1,0 +1,177 @@
+/// Bun, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"bun"#
+display_name = #"Bun"#
+description = #"Official Bun releases, compiled from source as a PIE (upstream ships a non-PIE binary)."#
+homepage = #"https://bun.sh"#
+
+version {
+  resolver = #"github"#
+  repo = #"oven-sh/bun"#
+  tag_prefix = #"bun-v"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+vars = new {
+  [#"llvm"#] = #"21"#
+  [#"inner"#] = #"bun-linux-{{arch}}"#
+}
+
+env = new {
+  [#"CC"#] = #"clang-{{llvm}}"#
+  [#"CXX"#] = #"clang++-{{llvm}}"#
+  [#"AR"#] = #"llvm-ar-{{llvm}}"#
+  [#"RANLIB"#] = #"llvm-ranlib-{{llvm}}"#
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-pie -Wl,-z,relro -Wl,-z,now"#
+  [#"RUSTFLAGS"#] = #"-C relocation-model=pic -C link-arg=-pie"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"cmake"#
+    #"ninja-build"#
+    #"pkg-config"#
+    #"libtool"#
+    #"git"#
+    #"golang"#
+    #"ruby-full"#
+    #"perl"#
+    #"python3"#
+    #"curl"#
+    #"wget"#
+    #"gnupg"#
+    #"lsb-release"#
+    #"software-properties-common"#
+    #"unzip"#
+    #"zip"#
+    #"xz-utils"#
+    #"ca-certificates"#
+    #"file"#
+    #"binutils"#
+  }
+  extra = new {
+    new {
+      name = #"Install LLVM {{llvm}}"#
+      run = #"""
+      # Bun pins an exact LLVM version upstream; a mismatch is a documented
+      # source of runtime memory-allocation failures.
+      wget -q https://apt.llvm.org/llvm.sh -O llvm.sh
+      chmod +x llvm.sh
+      {{sudo}}./llvm.sh {{llvm}} all
+      clang-{{llvm}} --version
+      """#
+    }
+    new {
+      name = #"Install Rust and Bun"#
+      run = #"""
+      # The Rust toolchain itself is pinned by bun's rust-toolchain.toml.
+      if ! command -v cargo >/dev/null; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --default-toolchain none --profile minimal
+      fi
+      if ! command -v bun >/dev/null; then
+        curl -fsSL https://bun.sh/install | bash
+      fi
+      """#
+    }
+  }
+}
+
+source {
+  url = #"https://github.com/oven-sh/bun/archive/refs/tags/{{upstream_tag}}.tar.gz"#
+  checksum {
+    kind = #"record"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Install bun dependencies"#
+    cwd = #"src"#
+    run = #"""
+    export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+    bun install --frozen-lockfile || bun install
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"""
+    export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+    bun run build:release
+    """#
+  }
+  new {
+    name = #"Collect the binary"#
+    run = #"""
+    # The release output path has moved between bun versions
+    # (build/release/bun, build/release-ci/bun, ...), so search for it.
+    bin="$(find src/build -maxdepth 3 -type f -name bun -perm -u+x | head -n1 || true)"
+    if [ -z "$bin" ]; then
+      echo "no built 'bun' executable found under src/build" >&2
+      find src/build -maxdepth 3 -type f | head -50 >&2
+      exit 1
+    fi
+    echo "found $bin"
+    mkdir -p out
+    cp "$bin" out/bun
+    chmod +x out/bun
+    """#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    run = #"""
+    ./out/bun --version
+    ./out/bun --revision
+    [ "$(./out/bun --version)" = "{{version}}" ]
+    ./out/bun -e 'console.log("eval ok", process.versions.bun, process.arch)'
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"out/bun"#
+  }
+  packaged = new {
+    #"stage/{{inner}}/bun"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      "{{extracted}}/bun" --version
+      echo 'console.log("run ok", 1 + 1)' > "{{workdir}}/smoke.ts"
+      "{{extracted}}/bun" run "{{workdir}}/smoke.ts"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"bun-v{{version}}-linux-{{arch}}-pie"#
+  format = #"zip"#
+  inner_dir = #"bun-linux-{{arch}}"#
+  steps = new {
+    new {
+      name = #"Stage the binary"#
+      run = #"""
+      cp out/bun "{{stage}}/bun"
+      chmod +x "{{stage}}/bun"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"Upstream ships bun as a non-PIE ELF EXEC, so this archive is a real rebuild rather than a repackage."#
+  #"Bun's build is the most fragile of the three - it pins an exact LLVM and moved off CMake between 1.2 and 1.3."#
+}

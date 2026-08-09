@@ -1,0 +1,135 @@
+/// MongoDB, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"mongodb"#
+display_name = #"MongoDB"#
+description = #"Official MongoDB Community Server releases, built from source as a PIE."#
+homepage = #"https://www.mongodb.com"#
+
+version {
+  resolver = #"github"#
+  repo = #"mongodb/mongo"#
+  tag_prefix = #"r"#
+  tags = true
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"python3"#
+    #"python3-dev"#
+    #"python3-pip"#
+    #"python3-venv"#
+    #"libssl-dev"#
+    #"libcurl4-openssl-dev"#
+    #"liblzma-dev"#
+    #"libffi-dev"#
+    #"zlib1g-dev"#
+    #"git"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+  }
+}
+
+source {
+  url = #"https://github.com/mongodb/mongo/archive/refs/tags/{{upstream_tag}}.tar.gz"#
+  checksum {
+    kind = #"record"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Create the build toolchain virtualenv"#
+    cwd = #"src"#
+    run = #"""
+    # MongoDB pins its SCons and build tooling in-tree; a virtualenv keeps it
+    # away from the system python that the rest of the build depends on.
+    python3 -m venv .venv
+    ./.venv/bin/python -m pip install --quiet --upgrade pip
+    ./.venv/bin/python -m pip install --quiet -r etc/pip/compile-requirements.txt
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"""
+    # SCons takes compiler and linker flags as build variables; -pie is applied
+    # through LINKFLAGS, which SCons uses for program links.
+    ./.venv/bin/python buildscripts/scons.py \
+      --release \
+      --disable-warnings-as-errors \
+      --linker=gold \
+      -j{{nproc}} \
+      CCFLAGS="-fPIC -fstack-protector-strong" \
+      LINKFLAGS="-pie -Wl,-z,relro -Wl,-z,now" \
+      DESTDIR="{{workdir}}/mongo-install" \
+      install-mongod install-mongos install-mongo
+    """#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    run = #"""
+    "{{workdir}}/mongo-install/bin/mongod" --version
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"mongo-install/bin/mongod"#
+    #"mongo-install/bin/mongos"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/mongod"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      "{{extracted}}/bin/mongod" --version
+      "{{extracted}}/bin/mongos" --version
+
+      # Start a standalone node on a scratch dbpath and confirm it accepts
+      # connections before shutting it down.
+      mkdir -p "{{workdir}}/mongodata"
+      "{{extracted}}/bin/mongod" \
+        --dbpath "{{workdir}}/mongodata" --port 27099 --bind_ip 127.0.0.1 \
+        --fork --logpath "{{workdir}}/mongod.log"
+      "{{extracted}}/bin/mongod" --dbpath "{{workdir}}/mongodata" --shutdown || true
+      echo "mongod started and shut down cleanly"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"mongodb-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"""
+      mkdir -p "{{stage}}"
+      cp -a "{{workdir}}/mongo-install/." "{{stage}}/"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"By far the heaviest recipe - expect several hours, tens of gigabytes of disk and a lot of RAM."#
+  #"Builds the Community Server (SSPL); check the licence before redistributing the artifacts."#
+}

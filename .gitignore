@@ -1,0 +1,7 @@
+/target
+/dist
+/work
+
+# recipes/*.pkl is the source of truth; the YAML beside it is generated output
+# (`pie generate`) and pie reads the .pkl directly anyway.
+/recipes/*.yaml

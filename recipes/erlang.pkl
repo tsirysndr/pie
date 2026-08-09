@@ -1,0 +1,174 @@
+/// Erlang/OTP, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"erlang"#
+display_name = #"Erlang/OTP"#
+description = #"Official Erlang/OTP releases, built from source as a PIE with every optional application enabled."#
+homepage = #"https://www.erlang.org"#
+
+version {
+  resolver = #"github"#
+  repo = #"erlang/otp"#
+  tag_prefix = #"OTP-"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-Wl,-z,relro -Wl,-z,now"#
+  [#"ERL_TOP"#] = #"{{srcdir}}"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"autoconf"#
+    #"automake"#
+    #"libtool"#
+    #"m4"#
+    #"make"#
+    #"perl"#
+    #"xz-utils"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+    #"libssl-dev"#
+    #"libncurses-dev"#
+    #"unixodbc-dev"#
+    #"libwxgtk3.2-dev"#
+    #"libwxgtk-webview3.2-dev"#
+    #"libgl1-mesa-dev"#
+    #"libglu1-mesa-dev"#
+    #"libpng-dev"#
+    #"libsctp-dev"#
+    #"default-jdk"#
+    #"xsltproc"#
+    #"libxml2-utils"#
+  }
+}
+
+source {
+  url = #"https://github.com/erlang/otp/releases/download/{{upstream_tag}}/otp_src_{{version}}.tar.gz"#
+  checksum {
+    kind = #"record"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Configure with every optional application"#
+    cwd = #"src"#
+    run = #"""
+    export ERL_TOP="$PWD"
+    ./configure \
+      --prefix=/ \
+      --enable-threads \
+      --enable-smp-support \
+      --enable-kernel-poll \
+      --enable-dirty-schedulers \
+      --enable-jit \
+      --enable-sctp \
+      --with-ssl \
+      --with-termcap \
+      --with-odbc \
+      --enable-wx \
+      --without-javac=no \
+      --enable-builtin-zlib
+
+    # Fail loudly rather than silently shipping a build with applications
+    # missing because a -dev package was not installed.
+    for app in crypto ssl public_key odbc wx; do
+      if grep -qE "^${app}[[:space:]]*:" lib/SKIP 2>/dev/null; then
+        echo "application '$app' was skipped by configure:" >&2
+        cat lib/SKIP >&2
+        exit 1
+      fi
+    done
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"""
+    export ERL_TOP="$PWD"
+    make -j{{nproc}}
+    """#
+  }
+  new {
+    name = #"Collect emulator binaries"#
+    run = #"""
+    # erts installs into bin/<target-triple>/, which varies per host, so the
+    # binaries are collected to a fixed path for verification.
+    mkdir -p out
+    found=0
+    for name in beam.smp erlexec epmd erl_child_setup; do
+      path="$(find src/bin -type f -name "$name" -perm -u+x | head -n1 || true)"
+      if [ -n "$path" ]; then
+        cp "$path" "out/$name"
+        found=$((found + 1))
+      fi
+    done
+    if [ "$found" -eq 0 ]; then
+      echo "no emulator binaries found under src/bin" >&2
+      find src/bin -maxdepth 3 -type f | head -30 >&2
+      exit 1
+    fi
+    ls -la out
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"out/beam.smp"#
+    #"out/erlexec"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      # An Erlang release records its own root, so the tarball is made usable
+      # at its final location by the Install script it ships with.
+      cd "{{extracted}}"
+      ./Install -minimal "{{extracted}}"
+
+      "{{extracted}}/bin/erl" -noshell -eval '
+        io:format("otp ~s / erts ~s~n",
+                  [erlang:system_info(otp_release),
+                   erlang:system_info(version)]),
+        {ok, _} = application:ensure_all_started(crypto),
+        io:format("crypto ~s~n", [crypto:info_lib()]),
+        {ok, _} = application:ensure_all_started(ssl),
+        io:format("ssl ok~n"),
+        halt().'
+
+      "{{extracted}}/bin/escript" -e 'io:format("escript ok~n").' || true
+      """#
+    }
+  }
+}
+
+package {
+  name = #"erlang-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Build a relocatable release"#
+      run = #"""
+      export ERL_TOP="{{srcdir}}"
+      make -C src release RELEASE_ROOT="{{stage}}"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"Run ./Install -minimal $(pwd) once after unpacking; an OTP release records its own root directory."#
+  #"Built with crypto, ssl, odbc, wx and jinterface enabled; configure is checked for skipped applications."#
+}

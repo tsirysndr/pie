@@ -1,0 +1,31 @@
+[package]
+name = "pie"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Build official language runtimes from source with PIE enabled, from YAML recipes"
+license = "MIT"
+
+[lib]
+name = "pie"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pie"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "wrap_help", "env"] }
+console = "0.15"
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+ureq = { version = "2", features = ["json"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

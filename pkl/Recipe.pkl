@@ -1,0 +1,200 @@
+/// Typed schema for a `pie` recipe.
+///
+/// The YAML files in `recipes/` are the source of truth and `pie` reads them
+/// directly — this module is optional. What it buys you is type checking and
+/// constraint checking *before* a recipe is committed: a misspelled resolver, a
+/// recipe with no PIE verification, or an artifact name that forgets the
+/// architecture all fail at `pkl eval` rather than an hour into a build.
+///
+/// Write a recipe by amending this module, then render it:
+///
+///     pkl eval -f yaml pkl/recipes/node.pkl -o recipes/node.yaml
+///
+/// Property names are deliberately snake_case so the rendered YAML matches the
+/// keys `pie` deserialises, with no renaming layer in between.
+@ModuleInfo { minPklVersion = "0.27.0" }
+open module pie.Recipe
+
+/// Short id used on the command line. Must match the file name.
+name: String(!isEmpty)
+
+/// Human readable name, e.g. `Node.js`.
+display_name: String?
+
+description: String?
+
+homepage: String?
+
+/// How `--version` is resolved and validated against the official release index.
+version: VersionSpec
+
+/// Extra template variables, expanded after the built-ins.
+vars: Mapping<String, String>?
+
+/// Environment applied to every build step.
+env: Mapping<String, String>?
+
+/// What has to be installed before the build.
+dependencies: Dependencies?
+
+/// Where the source archive comes from. Omit it for a project whose build needs
+/// a git checkout (submodules, generated files) and fetch the source in the
+/// first build step instead.
+source: Source?
+
+/// How to build it.
+build: Listing<Step>(!isEmpty)
+
+/// What must be a position independent executable when the build finishes.
+verify: Verify?
+
+/// How to turn the build tree into a distributable archive.
+package: Package
+
+notes: Listing<String>?
+
+/// Every template variable `pie` provides to a recipe. Mirrors
+/// `TEMPLATE_VARIABLES` in src/build.rs. `hidden` so it documents the contract
+/// without being rendered into the YAML.
+hidden variables: List<String> = List(
+  "name",
+  "version",
+  "version_bare",
+  "version_major",
+  "version_minor",
+  "version_xy",
+  "upstream_tag",
+  "os",
+  "arch",
+  "arch_gnu",
+  "nproc",
+  "workdir",
+  "srcdir",
+  "dist",
+  "deps_prefix",
+  "repo_root",
+  "sudo",
+  "package",
+  "stage",
+  "extracted"
+)
+
+class VersionSpec {
+  /// nodejs   — nodejs.org/dist/index.json
+  /// directory — an autoindex listing (python.org, postgresql.org, mariadb.org)
+  /// github   — the GitHub releases (or tags) API
+  /// php      — the php.net release index, which also publishes digests
+  resolver: "nodejs" | "directory" | "github" | "php"
+
+  /// nodejs: URL of the release index JSON.
+  index: String?
+
+  /// directory/php: URL of the listing of published releases.
+  listing: String?
+
+  /// directory: templated URL (`{{candidate}}`) that must exist for a candidate
+  /// to count as published.
+  probe: String?
+
+  /// directory: prefix on each directory name, e.g. `v` or `mariadb-`.
+  dir_prefix: String?
+
+  /// github: `owner/repo`.
+  repo: String?
+
+  /// github: tag prefix to strip and re-add, e.g. `bun-v`.
+  tag_prefix: String?
+
+  /// github: resolve against tags instead of releases, for projects that tag
+  /// releases without publishing a GitHub Release object.
+  tags: Boolean?
+
+  /// Aliases accepted in addition to an exact version, e.g. `lts`.
+  aliases: Listing<String>?
+}
+
+class Dependencies {
+  apt: Listing<String>?
+  dnf: Listing<String>?
+
+  /// Steps run after the package manager, for toolchains that are not packaged.
+  extra: Listing<Step>?
+}
+
+class Source {
+  /// Templated URL of the source archive. Must reference the resolved version,
+  /// or every version would build the same thing.
+  url: String(startsWith("https://"), contains("{{version") || contains("{{upstream_tag}}"))
+
+  /// Directory, relative to the work dir, to unpack into.
+  dir: String = "src"
+
+  strip_components: Int(isBetween(0, 8)) = 1
+
+  checksum: Checksum?
+}
+
+class Checksum {
+  /// sha256          — a digest given inline
+  /// sha256-manifest — a `SHASUMS256.txt`-style list
+  /// from-index      — the digest published by the project's release index
+  /// record          — no published checksum; record the digest without gating
+  kind: "sha256" | "sha256-manifest" | "from-index" | "record"
+
+  /// Required by `sha256-manifest`.
+  url: String?
+
+  /// Required by `sha256`.
+  value: String?
+}
+
+class Step {
+  name: String(!isEmpty)
+
+  /// Shell script, run with `bash -euo pipefail`.
+  run: String(!isEmpty)
+
+  /// Working directory, relative to the work dir.
+  cwd: String?
+
+  /// Step-local environment, layered over the recipe environment.
+  env: Mapping<String, String>?
+
+  /// Skip unless the build was asked for this feature (`pie build --with lto`).
+  /// Backticked because `when` is a Pkl keyword; it renders as plain `when`.
+  `when`: String?
+}
+
+class Verify {
+  /// Paths in the build tree that must be real position independent executables.
+  pie: Listing<String>?
+
+  /// Paths checked again after the staging install.
+  packaged: Listing<String>?
+
+  /// Paths whose only allowed `DT_NEEDED` entries are `dynamic_allowlist`.
+  self_contained: Listing<String>?
+
+  dynamic_allowlist: Listing<String>?
+
+  /// Smoke tests, run after the artifact is unpacked to a fresh prefix.
+  smoke: Listing<Step>?
+}
+
+class Package {
+  /// Templated archive name without extension. Version, architecture and `pie`
+  /// are all required: artifacts from every build land in one flat directory.
+  name: String(contains("{{version"), contains("{{arch}}"), contains("pie"))
+
+  /// Steps that populate `{{stage}}`.
+  steps: Listing<Step>(!isEmpty)
+
+  format: "tar.xz" | "tar.gz" | "zip"
+
+  /// Directory created inside the archive. Defaults to the package name.
+  inner_dir: String?
+}
+
+output {
+  renderer = new YamlRenderer {}
+}

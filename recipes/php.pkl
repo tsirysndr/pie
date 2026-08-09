@@ -1,0 +1,220 @@
+/// PHP, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"php"#
+display_name = #"PHP"#
+description = #"Official PHP releases, built from source as a PIE with the full extension set enabled."#
+homepage = #"https://www.php.net"#
+
+version {
+  resolver = #"php"#
+  listing = #"https://www.php.net/releases/index.php?json&version=8&max=-1"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-Wl,-z,relro -Wl,-z,now"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"autoconf"#
+    #"automake"#
+    #"libtool"#
+    #"bison"#
+    #"re2c"#
+    #"pkg-config"#
+    #"make"#
+    #"xz-utils"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+    #"libssl-dev"#
+    #"zlib1g-dev"#
+    #"libbz2-dev"#
+    #"libcurl4-openssl-dev"#
+    #"libzip-dev"#
+    #"libonig-dev"#
+    #"libicu-dev"#
+    #"libpng-dev"#
+    #"libjpeg-dev"#
+    #"libwebp-dev"#
+    #"libfreetype6-dev"#
+    #"libxpm-dev"#
+    #"libpq-dev"#
+    #"libsqlite3-dev"#
+    #"libldap2-dev"#
+    #"libsasl2-dev"#
+    #"libxml2-dev"#
+    #"libxslt1-dev"#
+    #"libtidy-dev"#
+    #"libgmp-dev"#
+    #"libreadline-dev"#
+    #"libsodium-dev"#
+    #"libargon2-dev"#
+    #"libffi-dev"#
+    #"libsnmp-dev"#
+    #"libenchant-2-dev"#
+    #"libdb-dev"#
+    #"libgdbm-dev"#
+  }
+}
+
+source {
+  url = #"https://www.php.net/distributions/php-{{version}}.tar.xz"#
+  checksum {
+    kind = #"from-index"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Configure with the full extension set"#
+    cwd = #"src"#
+    run = #"""
+    ./configure \
+      --prefix=/ \
+      --enable-cli \
+      --enable-cgi \
+      --enable-fpm \
+      --enable-phpdbg \
+      --enable-opcache \
+      --enable-mbstring \
+      --enable-intl \
+      --enable-bcmath \
+      --enable-calendar \
+      --enable-exif \
+      --enable-ftp \
+      --enable-gd \
+      --enable-soap \
+      --enable-sockets \
+      --enable-pcntl \
+      --enable-shmop \
+      --enable-sysvmsg \
+      --enable-sysvsem \
+      --enable-sysvshm \
+      --enable-dba \
+      --enable-mysqlnd \
+      --with-openssl \
+      --with-zlib \
+      --with-bz2 \
+      --with-curl \
+      --with-zip \
+      --with-jpeg \
+      --with-webp \
+      --with-freetype \
+      --with-xpm \
+      --with-mysqli=mysqlnd \
+      --with-pdo-mysql=mysqlnd \
+      --with-pgsql \
+      --with-pdo-pgsql \
+      --with-sqlite3 \
+      --with-pdo-sqlite \
+      --with-ldap \
+      --with-ldap-sasl \
+      --with-xsl \
+      --with-tidy \
+      --with-gettext \
+      --with-gmp \
+      --with-readline \
+      --with-sodium \
+      --with-password-argon2 \
+      --with-ffi \
+      --with-snmp \
+      --with-enchant \
+      --with-pear
+
+    # -pie rides in on EXTRA_LDFLAGS_PROGRAM, which PHP applies to program
+    # links only. Append to the configured value rather than replacing it.
+    if grep -q '^EXTRA_LDFLAGS_PROGRAM' Makefile; then
+      sed -n 's/^EXTRA_LDFLAGS_PROGRAM[[:space:]]*=[[:space:]]*//p' Makefile \
+        | head -n1 > .extra_ldflags_program
+    else
+      : > .extra_ldflags_program
+    fi
+    echo "EXTRA_LDFLAGS_PROGRAM = $(cat .extra_ldflags_program) -pie"
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"""
+    make -j{{nproc}} \
+      EXTRA_LDFLAGS_PROGRAM="$(cat .extra_ldflags_program) -pie"
+    """#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    cwd = #"src"#
+    run = #"""
+    ./sapi/cli/php -v
+    [ "$(./sapi/cli/php -r 'echo PHP_VERSION;')" = "{{version}}" ]
+    ./sapi/cli/php -m
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/sapi/cli/php"#
+    #"src/sapi/cgi/php-cgi"#
+    #"src/sapi/fpm/php-fpm"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/php"#
+    #"stage/{{package}}/sbin/php-fpm"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      php="{{extracted}}/bin/php"
+      "$php" -v
+      [ "$("$php" -r 'echo PHP_VERSION;')" = "{{version}}" ]
+
+      # Every extension is compiled in, so this list is the real feature set.
+      "$php" -m
+      for ext in openssl curl mbstring intl gd zip sqlite3 pdo_mysql pdo_pgsql \
+                 soap sockets bcmath exif ffi sodium xsl tidy gmp readline \
+                 opcache snmp enchant ldap; do
+        "$php" -m | grep -qix "$ext" || {
+          echo "extension '$ext' is missing from the build" >&2
+          exit 1
+        }
+      done
+      echo "all expected extensions are present"
+
+      "$php" -r 'echo json_encode(["pie" => true, "sha" => hash("sha256", "pie")]), PHP_EOL;'
+      "{{extracted}}/sbin/php-fpm" --version
+      """#
+    }
+  }
+}
+
+package {
+  name = #"php-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"""
+      make -C src install \
+        INSTALL_ROOT="{{stage}}" \
+        EXTRA_LDFLAGS_PROGRAM="$(cat src/.extra_ldflags_program) -pie"
+      """#
+    }
+  }
+}
+
+notes = new {
+  #"Every extension is built statically into the binaries, so there is no extension_dir to ship."#
+  #"php.ini is looked up at an absolute path baked in at configure time; pass -c or set PHP_INI_SCAN_DIR when relocating."#
+}

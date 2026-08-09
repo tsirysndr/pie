@@ -1,0 +1,117 @@
+/// Redis, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"redis"#
+display_name = #"Redis"#
+description = #"Official Redis releases, built from source as a PIE with TLS and all modules enabled."#
+homepage = #"https://redis.io"#
+
+version {
+  resolver = #"github"#
+  repo = #"redis/redis"#
+  tag_prefix = #""#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-pie -Wl,-z,relro -Wl,-z,now"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"pkg-config"#
+    #"make"#
+    #"libssl-dev"#
+    #"libsystemd-dev"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+  }
+}
+
+source {
+  url = #"https://github.com/redis/redis/archive/refs/tags/{{upstream_tag}}.tar.gz"#
+  checksum {
+    kind = #"record"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Compile with TLS and systemd support"#
+    cwd = #"src"#
+    run = #"""
+    make -j{{nproc}} \
+      BUILD_TLS=yes \
+      USE_SYSTEMD=yes \
+      MALLOC=jemalloc
+    """#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    cwd = #"src"#
+    run = #"""
+    ./src/redis-server --version
+    ./src/redis-cli --version
+    [ -n "$(./src/redis-server --version | grep -o 'v={{version}}')" ]
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/src/redis-server"#
+    #"src/src/redis-cli"#
+    #"src/src/redis-benchmark"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/redis-server"#
+    #"stage/{{package}}/bin/redis-cli"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      server="{{extracted}}/bin/redis-server"
+      "$server" --version
+      "{{extracted}}/bin/redis-cli" --version
+
+      # Start it, talk to it, shut it down: proves TLS and jemalloc linked.
+      "$server" --port 6399 --daemonize no --save '' &
+      pid=$!
+      trap 'kill $pid 2>/dev/null || true' EXIT
+      for _ in $(seq 1 30); do
+        "{{extracted}}/bin/redis-cli" -p 6399 ping 2>/dev/null | grep -q PONG && break
+        sleep 1
+      done
+      "{{extracted}}/bin/redis-cli" -p 6399 set pie ok
+      [ "$("{{extracted}}/bin/redis-cli" -p 6399 get pie)" = "ok" ]
+      "{{extracted}}/bin/redis-cli" -p 6399 shutdown nosave 2>/dev/null || true
+      echo "server round-trip ok"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"redis-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"make -C src install PREFIX="{{stage}}""#
+    }
+  }
+}
+
+notes = new {
+  #"Built with BUILD_TLS=yes, so redis-server supports TLS out of the box."#
+  #"jemalloc is compiled in from the bundled copy rather than linked from the host."#
+}

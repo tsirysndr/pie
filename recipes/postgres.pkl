@@ -1,0 +1,152 @@
+/// PostgreSQL, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"postgres"#
+display_name = #"PostgreSQL"#
+description = #"Official PostgreSQL releases, built from source as a PIE with the full option set."#
+homepage = #"https://www.postgresql.org"#
+
+version {
+  resolver = #"directory"#
+  listing = #"https://ftp.postgresql.org/pub/source/"#
+  probe = #"https://ftp.postgresql.org/pub/source/v{{candidate}}/postgresql-{{candidate}}.tar.bz2"#
+  dir_prefix = #"v"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIC -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-Wl,-z,relro -Wl,-z,now"#
+  [#"LDFLAGS_EX"#] = #"-pie"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"pkg-config"#
+    #"make"#
+    #"bison"#
+    #"flex"#
+    #"perl"#
+    #"python3-dev"#
+    #"tcl-dev"#
+    #"libreadline-dev"#
+    #"zlib1g-dev"#
+    #"liblz4-dev"#
+    #"libzstd-dev"#
+    #"libssl-dev"#
+    #"libpam0g-dev"#
+    #"libxml2-dev"#
+    #"libxslt1-dev"#
+    #"libldap2-dev"#
+    #"libselinux1-dev"#
+    #"libkrb5-dev"#
+    #"libicu-dev"#
+    #"uuid-dev"#
+    #"gettext"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+  }
+}
+
+source {
+  url = #"https://ftp.postgresql.org/pub/source/v{{version}}/postgresql-{{version}}.tar.bz2"#
+  checksum {
+    kind = #"sha256-manifest"#
+    url = #"https://ftp.postgresql.org/pub/source/v{{version}}/postgresql-{{version}}.tar.bz2.sha256"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Configure with every option"#
+    cwd = #"src"#
+    run = #"""
+    ./configure \
+      --prefix=/ \
+      --with-openssl \
+      --with-readline \
+      --with-libxml \
+      --with-libxslt \
+      --with-icu \
+      --with-lz4 \
+      --with-zstd \
+      --with-zlib \
+      --with-pam \
+      --with-ldap \
+      --with-gssapi \
+      --with-selinux \
+      --with-uuid=e2fs \
+      --with-perl \
+      --with-python \
+      --with-tcl \
+      --with-system-tzdata=/usr/share/zoneinfo \
+      --enable-nls \
+      --enable-thread-safety \
+      LDFLAGS_EX="-pie"
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"make -j{{nproc}} world-bin LDFLAGS_EX="-pie""#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    cwd = #"src"#
+    run = #"""
+    ./src/backend/postgres --version
+    [ "$(./src/backend/postgres --version | awk '{print $3}')" = "{{version}}" ]
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/src/backend/postgres"#
+    #"src/src/bin/psql/psql"#
+    #"src/src/bin/pg_dump/pg_dump"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/postgres"#
+    #"stage/{{package}}/bin/psql"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      "{{extracted}}/bin/postgres" --version
+      "{{extracted}}/bin/psql" --version
+      "{{extracted}}/bin/pg_config" --configure
+
+      # A real initdb proves the binaries, locale data and shared libraries in
+      # the tarball actually agree with each other.
+      "{{extracted}}/bin/initdb" -D "{{workdir}}/pgdata" -U postgres -E UTF8 --no-sync
+      echo "initdb ok"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"postgres-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"make -C src install-world-bin DESTDIR="{{stage}}" LDFLAGS_EX="-pie""#
+    }
+  }
+}
+
+notes = new {
+  #"Contrib extensions and libpq are shared objects by design; -pie goes through LDFLAGS_EX so only executables get it."#
+  #"Built against the host's tzdata via --with-system-tzdata."#
+}

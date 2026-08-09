@@ -1,0 +1,148 @@
+/// MariaDB, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"mariadb"#
+display_name = #"MariaDB"#
+description = #"Official MariaDB server releases, built from source as a PIE with the full plugin set."#
+homepage = #"https://mariadb.org"#
+
+version {
+  resolver = #"directory"#
+  listing = #"https://archive.mariadb.org/"#
+  probe = #"https://archive.mariadb.org/mariadb-{{candidate}}/source/mariadb-{{candidate}}.tar.gz"#
+  dir_prefix = #"mariadb-"#
+  aliases = new {
+    #"latest"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fstack-protector-strong"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"cmake"#
+    #"ninja-build"#
+    #"pkg-config"#
+    #"bison"#
+    #"libncurses-dev"#
+    #"libssl-dev"#
+    #"zlib1g-dev"#
+    #"libzstd-dev"#
+    #"liblz4-dev"#
+    #"libbz2-dev"#
+    #"libsnappy-dev"#
+    #"libaio-dev"#
+    #"libnuma-dev"#
+    #"libpcre2-dev"#
+    #"libxml2-dev"#
+    #"libcurl4-openssl-dev"#
+    #"libkrb5-dev"#
+    #"libpam0g-dev"#
+    #"libjudy-dev"#
+    #"libboost-all-dev"#
+    #"libevent-dev"#
+    #"libedit-dev"#
+    #"gnutls-dev"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+  }
+}
+
+source {
+  url = #"https://archive.mariadb.org/mariadb-{{version}}/source/mariadb-{{version}}.tar.gz"#
+  checksum {
+    kind = #"sha256-manifest"#
+    url = #"https://archive.mariadb.org/mariadb-{{version}}/source/sha256sums.txt"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Configure with every plugin"#
+    run = #"""
+    cmake -S src -B build -G Ninja \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_INSTALL_PREFIX=/ \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro -Wl,-z,now" \
+      -DPLUGIN_ARCHIVE=YES \
+      -DPLUGIN_BLACKHOLE=YES \
+      -DPLUGIN_FEDERATED=YES \
+      -DPLUGIN_FEDERATEDX=YES \
+      -DPLUGIN_INNOBASE=YES \
+      -DPLUGIN_MROONGA=YES \
+      -DPLUGIN_PARTITION=YES \
+      -DPLUGIN_PERFSCHEMA=YES \
+      -DPLUGIN_SEQUENCE=YES \
+      -DPLUGIN_SPHINX=YES \
+      -DPLUGIN_SPIDER=YES \
+      -DPLUGIN_S3=YES \
+      -DPLUGIN_CONNECT=YES \
+      -DWITH_SSL=system \
+      -DWITH_ZLIB=system \
+      -DWITH_PCRE=system \
+      -DWITH_JEMALLOC=no \
+      -DWITH_UNIT_TESTS=OFF \
+      -DWITH_EMBEDDED_SERVER=ON \
+      -DWITH_WSREP=ON \
+      -DWITH_SAFEMALLOC=OFF
+    """#
+  }
+  new {
+    name = #"Compile"#
+    run = #"cmake --build build --parallel {{nproc}}"#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    run = #"""
+    ./build/sql/mariadbd --version
+    ./build/client/mariadb --version
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"build/sql/mariadbd"#
+    #"build/client/mariadb"#
+  }
+  packaged = new {
+    #"stage/{{package}}/bin/mariadbd"#
+    #"stage/{{package}}/bin/mariadb"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      "{{extracted}}/bin/mariadbd" --version
+      "{{extracted}}/bin/mariadb" --version
+      "{{extracted}}/bin/mariadb-install-db" --help > /dev/null
+      echo "server, client and bootstrap tooling all run"
+      """#
+    }
+  }
+}
+
+package {
+  name = #"mariadb-v{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"DESTDIR="{{stage}}" cmake --install build"#
+    }
+  }
+}
+
+notes = new {
+  #"Storage engines and plugins remain shared objects; only the executables are linked -pie."#
+  #"jemalloc is disabled so the tarball does not depend on a system jemalloc at runtime."#
+}

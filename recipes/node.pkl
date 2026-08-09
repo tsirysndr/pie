@@ -1,0 +1,106 @@
+/// Node.js, expressed in typed Pkl.
+///
+/// Regenerate the YAML with: pie generate
+amends "../pkl/Recipe.pkl"
+
+name = #"node"#
+display_name = #"Node.js"#
+description = #"Official Node.js releases, built from source as a PIE."#
+homepage = #"https://nodejs.org"#
+
+version {
+  resolver = #"nodejs"#
+  index = #"https://nodejs.org/dist/index.json"#
+  aliases = new {
+    #"latest"#
+    #"lts"#
+  }
+}
+
+env = new {
+  [#"CFLAGS"#] = #"-fPIE -fstack-protector-strong"#
+  [#"CXXFLAGS"#] = #"-fPIE -fstack-protector-strong"#
+  [#"LDFLAGS"#] = #"-pie -Wl,-z,relro -Wl,-z,now"#
+}
+
+dependencies = new {
+  apt = new {
+    #"build-essential"#
+    #"g++"#
+    #"make"#
+    #"python3"#
+    #"xz-utils"#
+    #"ca-certificates"#
+    #"curl"#
+    #"file"#
+    #"binutils"#
+  }
+}
+
+source {
+  url = #"https://nodejs.org/dist/{{version}}/node-{{version}}.tar.xz"#
+  checksum {
+    kind = #"sha256-manifest"#
+    url = #"https://nodejs.org/dist/{{version}}/SHASUMS256.txt"#
+  }
+}
+
+build = new {
+  new {
+    name = #"Configure"#
+    cwd = #"src"#
+    run = #"""
+    # Stay on gyp's default (make) generator on purpose: it forwards
+    # CFLAGS/CXXFLAGS/LDFLAGS into the target build at build time, whereas the
+    # ninja generator bakes them in at generate time.
+    args=(--prefix=/)
+    case " $PIE_WITH " in *" lto "*) args+=(--enable-lto) ;; esac
+    ./configure "${args[@]}"
+    """#
+  }
+  new {
+    name = #"Compile"#
+    cwd = #"src"#
+    run = #"make -j{{nproc}}"#
+  }
+  new {
+    name = #"Smoke test the build tree"#
+    cwd = #"src"#
+    run = #"""
+    ./out/Release/node -e 'console.log(process.version, process.arch, process.platform)'
+    ./out/Release/node -e 'require("crypto").randomBytes(8); console.log("crypto ok")'
+    [ "$(./out/Release/node -p 'process.version')" = "{{version}}" ]
+    """#
+  }
+}
+
+verify = new {
+  pie = new {
+    #"src/out/Release/node"#
+  }
+  smoke = new {
+    new {
+      name = #"Smoke test the artifact"#
+      run = #"""
+      "{{extracted}}/bin/node" --version
+      "{{extracted}}/bin/npm" --version
+      [ "$("{{extracted}}/bin/node" -p 'process.version')" = "{{version}}" ]
+      """#
+    }
+  }
+}
+
+package {
+  name = #"node-{{version}}-linux-{{arch}}-pie"#
+  format = #"tar.xz"#
+  steps = new {
+    new {
+      name = #"Install into staging"#
+      run = #"make -C src install DESTDIR="{{stage}}" PREFIX=/"#
+    }
+  }
+}
+
+notes = new {
+  #"The tarball layout mirrors the official distribution, so it drops in as a replacement."#
+}

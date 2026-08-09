@@ -1,0 +1,247 @@
+name: build
+
+# Builds one recipe, for linux-x64 and linux-arm64, and publishes the artifacts
+# to a GitHub release.
+#
+# Trigger either by:
+#   * pushing a tag "<recipe>-v<version>"  e.g. node-v22.11.0, redis-v8.0.1
+#   * workflow_dispatch with a recipe and a version
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipe:
+        description: 'Recipe to build'
+        required: true
+        type: choice
+        options:
+          - node
+          - python
+          - bun
+          - php
+          - erlang
+          - postgres
+          - mariadb
+          - redis
+          - mongodb
+          - dragonfly
+      version:
+        description: 'Version: exact (22.11.0), a series (3.12), or an alias (latest, lts)'
+        required: true
+        default: 'latest'
+      with:
+        description: 'Optional recipe features, space separated (e.g. "pgo lto")'
+        required: false
+        default: ''
+      draft:
+        description: 'Publish the release as a draft'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - '*-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.event.inputs.recipe || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      recipe: ${{ steps.plan.outputs.recipe }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      title: ${{ steps.plan.outputs.title }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: plan
+
+      # Recipes are Pkl; pie evaluates them through the pkl CLI.
+      - name: Install pkl
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
+          sudo chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Build pie
+        run: cargo build --release --locked
+
+      - name: Resolve the recipe and version
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_RECIPE: ${{ inputs.recipe }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "push" ]; then
+            # Tags are "<recipe>-v<version>", e.g. node-v22.11.0.
+            recipe="${REF_NAME%-v*}"
+            request="${REF_NAME##*-v}"
+            if [ "$recipe" = "$REF_NAME" ] || [ -z "$request" ]; then
+              echo "::error::tag '$REF_NAME' is not in the form <recipe>-v<version>"
+              exit 1
+            fi
+          else
+            recipe="$INPUT_RECIPE"
+            request="$INPUT_VERSION"
+          fi
+
+          if [ ! -f "recipes/${recipe}.pkl" ]; then
+            echo "::error::no recipe named '${recipe}' (see recipes/)"
+            ./target/release/pie list
+            exit 1
+          fi
+
+          # Resolving here means the release tag is known before any build
+          # starts, and an unofficial version fails in seconds rather than hours.
+          version="$(./target/release/pie resolve "$recipe" --version "$request")"
+
+          # Render the recipe once so the release title can use its display name
+          # without the release job needing pkl or a build of pie.
+          ./target/release/pie generate "$recipe" > /dev/null
+          title="$(sed -n 's/^display_name: //p' "recipes/${recipe}.yaml" | head -n1)"
+
+          {
+            echo "recipe=$recipe"
+            echo "version=$version"
+            echo "tag=${recipe}-v${version}"
+            echo "title=${title:-$recipe}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Building **${recipe} ${version}** for linux-x64 and linux-arm64" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ needs.plan.outputs.recipe }} ${{ needs.plan.outputs.version }} linux-${{ matrix.arch }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # Always both architectures.
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      # Recipes are Pkl; pie evaluates them through the pkl CLI.
+      - name: Install pkl
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
+          sudo chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Build pie
+        run: cargo build --release --locked
+
+      - name: Free disk space
+        run: |
+          # Some recipes (mongodb especially) need far more room than a runner
+          # has with the preinstalled toolchains still on it.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Build ${{ needs.plan.outputs.recipe }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          features=""
+          for feature in ${{ inputs.with }}; do
+            features="$features --with $feature"
+          done
+
+          ./target/release/pie build "${{ needs.plan.outputs.recipe }}" \
+            --version "${{ needs.plan.outputs.version }}" \
+            --arch "${{ matrix.arch }}" \
+            --output dist \
+            $features
+
+      - name: Verify the artifacts once more, from the outside
+        run: |
+          set -euo pipefail
+          ls -la dist
+          ( cd dist && sha256sum -c ./*.sha256 )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.plan.outputs.recipe }}-${{ needs.plan.outputs.version }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish ${{ needs.plan.outputs.tag }}
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          RECIPE: ${{ needs.plan.outputs.recipe }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TITLE: ${{ needs.plan.outputs.title }}
+          DRAFT: ${{ inputs.draft && '--draft' || '' }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+
+          notes=$(cat <<EOF
+          \`${TITLE} ${VERSION}\` built from official source with **PIE (position
+          independent executable)** enabled, for \`linux-x64\` and \`linux-arm64\`.
+
+          Built by [\`pie\`](https://github.com/${GITHUB_REPOSITORY}) from
+          [\`recipes/${RECIPE}.pkl\`](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/recipes/${RECIPE}.pkl).
+
+          Every binary is verified as ELF \`DYN\` carrying \`DT_FLAGS_1 = PIE\` with a
+          \`PT_INTERP\` segment before packaging, and each archive is unpacked to a
+          fresh prefix and smoke tested. Checksums are in the \`.sha256\` files.
+          EOF
+          )
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "${TITLE} ${VERSION} (PIE)" \
+              --notes "$notes" \
+              $DRAFT
+          fi
+
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
