@@ -82,8 +82,17 @@ php-v8.3.15        postgres-v17.2      dragonfly-v1.27.0
 **By dispatch** — Actions → *build* → *Run workflow*, then pick a `recipe` and a `version`
 (exact, series, or alias). The release tag is `<recipe>-v<resolved version>`.
 
-`.github/workflows/ci.yml` is the cheap gate on every push: `cargo fmt --check`, `clippy
--D warnings`, the test suite, and an evaluation of every Pkl recipe.
+`.github/workflows/ci.yml` is the gate: `cargo fmt --check`, `clippy -D warnings`, the test
+suite, and an evaluation of every Pkl recipe.
+
+It also runs a real **end-to-end build of `redis`** — the lightest recipe by a wide margin,
+a plain Makefile build that finishes in minutes, which is what makes it affordable as a
+gate. It exercises the whole pipeline (resolve → dependencies → verified download → compile
+→ PIE verification → package → unpack to a fresh prefix → round-trip against a running
+server), then asserts the shipped binaries are position independent **twice**: once with
+`pie verify`, and once with `readelf` directly, so the gate does not rest solely on `pie`'s
+own ELF parser being correct. The version is pinned rather than `latest`, so an upstream
+release cannot fail an unrelated pull request.
 
 ## How PIE is applied
 

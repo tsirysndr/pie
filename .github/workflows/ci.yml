@@ -54,3 +54,87 @@ jobs:
         run: |
           cargo run --locked --quiet -- list
           cargo run --locked --quiet -- generate
+
+  e2e:
+    name: End-to-end build (redis)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Redis is the lightest recipe by a wide margin — a plain Makefile build
+      # that finishes in minutes — which makes it the one that can gate every
+      # push. Pinned rather than `latest` so an upstream release cannot fail an
+      # unrelated pull request; bump it deliberately.
+      REDIS_VERSION: '8.0.1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+
+      - name: Install pkl
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL -o /usr/local/bin/pkl \
+            https://github.com/apple/pkl/releases/latest/download/pkl-linux-amd64
+          sudo chmod +x /usr/local/bin/pkl
+          pkl --version
+
+      - name: Build pie
+        run: cargo build --release --locked
+
+      # The real thing: resolve, install dependencies, download and verify the
+      # source, compile, verify PIE, package, then unpack to a fresh prefix and
+      # round-trip against a running server.
+      - name: Build redis from source
+        run: |
+          ./target/release/pie build redis \
+            --version "$REDIS_VERSION" \
+            --output dist
+
+      - name: Check the artifact and its checksum
+        run: |
+          set -euo pipefail
+          artifact="dist/redis-v${REDIS_VERSION}-linux-x64-pie.tar.xz"
+          if [ ! -f "$artifact" ]; then
+            echo "::error::$artifact was not produced"
+            ls -la dist
+            exit 1
+          fi
+          ls -la dist
+          ( cd dist && sha256sum -c ./*.sha256 )
+
+      - name: Assert the shipped binaries are PIE
+        run: |
+          set -euo pipefail
+          root="check/redis-v${REDIS_VERSION}-linux-x64-pie"
+          mkdir -p check
+          tar -C check -xf "dist/redis-v${REDIS_VERSION}-linux-x64-pie.tar.xz"
+
+          # pie's own checker, against the archive as shipped...
+          ./target/release/pie verify \
+            "$root/bin/redis-server" \
+            "$root/bin/redis-cli" \
+            "$root/bin/redis-benchmark"
+
+          # ...and readelf independently, so this gate does not rest solely on
+          # pie's ELF parser being correct. A bug there would let the in-build
+          # verification pass on a non-PIE binary; this would still catch it.
+          for name in redis-server redis-cli redis-benchmark; do
+            bin="$root/bin/$name"
+            file "$bin"
+
+            readelf -h "$bin" | grep -qE '^ *Type: *DYN' \
+              || { echo "::error::$name is not ELF type DYN"; exit 1; }
+            readelf -d "$bin" | grep -qE 'FLAGS_1.*\bPIE\b' \
+              || { echo "::error::$name is missing DT_FLAGS_1 PIE"; exit 1; }
+            # A shared library is also ET_DYN; only an executable has PT_INTERP.
+            readelf -l "$bin" | grep -q 'program interpreter' \
+              || { echo "::error::$name has no PT_INTERP segment"; exit 1; }
+
+            echo "$name is a position independent executable"
+          done
+
+          echo "### redis ${REDIS_VERSION}: PIE confirmed by pie and readelf" \
+            >> "$GITHUB_STEP_SUMMARY"
